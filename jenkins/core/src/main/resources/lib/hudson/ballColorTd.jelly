@@ -1,0 +1,88 @@
+<!--
+The MIT License
+
+Copyright (c) 2004-2009, Sun Microsystems, Inc., Kohsuke Kawaguchi, CloudBees, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+-->
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:x="jelly:xml" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:f="/lib/form">
+  <st:documentation>
+    Display the ball in a TD.
+    <st:attribute name="it" type="hudson.model.BallColor">
+      Color of the ball or null to skip drawing.
+    </st:attribute>
+    <st:attribute name="iconSizeClass">
+      Specifies the size of the icon. If unspecified, it inherits from
+      the nearest setting in the ancestor call tree.
+      Possible values are "icon-sm" (16x16), "icon-md" (24x24), "icon-lg" (32x32), "icon-xlg" (48x48)
+    </st:attribute>
+    <st:attribute name="style">
+      Additional CSS styles to apply.
+    </st:attribute>
+  </st:documentation>
+  <td data="${it.ordinal()}">
+    <j:if test="${attrs.it!=null}">
+      <j:set var="iconClassName" value="${it.iconClassName}"/>
+      <j:if test="${iconClassName == null}">
+        <j:set var="iconClassName" value="${icons.toNormalizedIconNameClass(it.image)}"/>
+      </j:if>
+      <!-- convert legacy @iconSize specification to @iconSizeClass -->
+      <j:if test="${iconSizeClass==null}">
+        <j:choose>
+          <j:when test="${attrs.iconSize!=null}">
+            <j:set var="iconSizeClass" value="${icons.toNormalizedIconSizeClass(attrs.iconSize)}"/>
+          </j:when>
+          <j:when test="${iconSize!=null}">
+            <j:set var="iconSizeClass" value="${icons.toNormalizedIconSizeClass(iconSize)}" />
+          </j:when>
+        </j:choose>
+      </j:if>
+
+      <j:choose>
+        <j:when test="${iconClassName != null}">
+          <l:icon class="${iconClassName} ${iconSizeClass}" alt="${it.description}"
+               tooltip="${it.description}" style="${attrs.style}" />
+        </j:when>
+        <j:otherwise>
+          <!-- "it" is not a hudson.model.BallColor.  Let's try figure out the icon from its URL.  -->
+          <j:set var="iconUrl" value="${it.getImageOf(iconSize)}"/>
+          <j:if test="${iconUrl.startsWith(imagesURL)}">
+            <!-- Normalize the icon URL  -->
+            <j:set var="iconUrl" value="${iconUrl.substring(imagesURL.length() + 1)}"/>
+          </j:if>
+
+          <!-- See if we can get an Icon def from the URL  -->
+          <j:set var="icon" value="${icons.getIconByUrl(iconUrl)}"/>
+          <j:choose>
+            <j:when test="${icon != null}">
+              <!-- We found the Icon def -->
+              <l:icon class="${icon.classSpec}" alt="${it.description}" tooltip="${it.description}" style="${attrs.style}" />
+            </j:when>
+            <j:otherwise>
+              <!-- We don't seem to have this icon in the IconSet... fallback again... -->
+              <j:set var="iconUrl" value="${it.getImageOf(iconSize)}"/>
+              <l:icon src="${iconUrl}" class="${iconSizeClass}" alt="${it.description}" tooltip="${it.description}" style="${attrs.style}" />
+            </j:otherwise>
+          </j:choose>
+        </j:otherwise>
+      </j:choose>
+    </j:if>
+  </td>
+</j:jelly>

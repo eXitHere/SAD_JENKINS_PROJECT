@@ -1,0 +1,71 @@
+package jenkins.model;
+
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.when;
+import static org.powermock.api.mockito.PowerMockito.verifyStatic;
+import hudson.EnvVars;
+import hudson.model.Computer;
+import hudson.model.Job;
+import hudson.model.TaskListener;
+
+import java.io.File;
+import java.io.IOException;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.jvnet.hudson.test.Issue;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.powermock.api.mockito.PowerMockito;
+import org.powermock.core.classloader.annotations.PowerMockIgnore;
+import org.powermock.core.classloader.annotations.PrepareForTest;
+import org.powermock.modules.junit4.PowerMockRunner;
+
+@RunWith(PowerMockRunner.class)
+@PowerMockIgnore({"com.sun.org.apache.xerces.*", "javax.xml.*", "org.xml.*"})
+public class CoreEnvironmentContributorTest {
+    CoreEnvironmentContributor instance;
+
+    private AutoCloseable mocks;
+
+    @Mock
+    Job job;
+    
+    @Mock
+    TaskListener listener;
+    
+    @Mock
+    Jenkins jenkins;
+
+    @After
+    public void tearDown() throws Exception {
+        mocks.close();
+    }
+
+    @Before
+    public void setUp() throws Exception {
+        mocks = MockitoAnnotations.openMocks(this);
+        instance = new CoreEnvironmentContributor();
+    }
+
+    @Issue("JENKINS-19307")
+    @Test
+    @PrepareForTest(fullyQualifiedNames={"hudson.model.Computer", "jenkins.model.Jenkins"})
+    public void buildEnvironmentForJobShouldntUseCurrentComputer() throws IOException, InterruptedException {
+        PowerMockito.mockStatic(Computer.class);
+        PowerMockito.mockStatic(Jenkins.class);
+        PowerMockito.when(Jenkins.get()).thenReturn(jenkins);
+        when(jenkins.getRootDir()).thenReturn(new File("."));
+        
+        EnvVars env = new EnvVars();
+        instance.buildEnvironmentFor(job, env, listener);
+        
+        // currentComputer shouldn't be called since it relates to a running build,
+        // which is not the case for calls of this method (e.g. polling) 
+        verifyStatic(Computer.class, times(0));
+        Computer.currentComputer();
+    }
+
+}

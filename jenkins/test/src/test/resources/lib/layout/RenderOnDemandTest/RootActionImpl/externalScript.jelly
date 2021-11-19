@@ -1,0 +1,4 @@
+<?jelly escape-by-default='true'?>
+<l:view xmlns:l="/lib/layout" contentType="text/javascript">
+  y = "yyy";
+</l:view>

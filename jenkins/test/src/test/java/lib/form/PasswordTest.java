@@ -1,0 +1,753 @@
+/*
+ * The MIT License
+ *
+ * Copyright (c) 2004-2010, InfraDNA, Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+package lib.form;
+
+import com.gargoylesoftware.htmlunit.Page;
+import com.gargoylesoftware.htmlunit.html.DomElement;
+import com.gargoylesoftware.htmlunit.html.HtmlHiddenInput;
+import com.gargoylesoftware.htmlunit.html.HtmlInput;
+import com.gargoylesoftware.htmlunit.html.HtmlPage;
+import com.gargoylesoftware.htmlunit.html.HtmlTextInput;
+import hudson.FilePath;
+import hudson.Launcher;
+import hudson.cli.CopyJobCommand;
+import hudson.cli.GetJobCommand;
+import hudson.model.AbstractProject;
+import hudson.model.Action;
+import hudson.model.Computer;
+import hudson.model.FreeStyleProject;
+import hudson.model.Item;
+import hudson.model.Job;
+import hudson.model.JobProperty;
+import hudson.model.JobPropertyDescriptor;
+import hudson.model.RootAction;
+import hudson.model.Run;
+import hudson.model.TaskListener;
+import hudson.model.User;
+import hudson.tasks.BuildStepDescriptor;
+import hudson.tasks.Builder;
+import hudson.util.FormValidation;
+import hudson.util.Secret;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Locale;
+import java.util.regex.Pattern;
+
+import jenkins.model.GlobalConfiguration;
+import jenkins.model.Jenkins;
+import jenkins.model.TransientActionFactory;
+import jenkins.security.apitoken.ApiTokenTestHelper;
+import jenkins.tasks.SimpleBuildStep;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.hamcrest.MatcherAssert.assertThat;
+
+import org.junit.Rule;
+import org.junit.Test;
+import org.jvnet.hudson.test.Issue;
+import org.jvnet.hudson.test.JenkinsRule;
+import org.jvnet.hudson.test.MockAuthorizationStrategy;
+import org.jvnet.hudson.test.TestExtension;
+import org.kohsuke.stapler.DataBoundConstructor;
+import org.kohsuke.stapler.DataBoundSetter;
+import org.kohsuke.stapler.QueryParameter;
+import org.kohsuke.stapler.Stapler;
+import org.kohsuke.stapler.StaplerRequest;
+
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import org.springframework.security.core.Authentication;
+
+public class PasswordTest {
+
+    @Rule
+    public JenkinsRule j = new JenkinsRule();
+
+    @Test
+    public void secretNotPlainText() throws Exception {
+        SecretNotPlainText.secret = Secret.fromString("secret");
+        HtmlPage p = j.createWebClient().goTo("secretNotPlainText");
+        String value = ((HtmlInput)p.getElementById("password")).getValueAttribute();
+        assertNotEquals("password shouldn't be plain text", "secret", value);
+        assertEquals("secret",Secret.fromString(value).getPlainText());
+    }
+
+    @TestExtension("secretNotPlainText")
+    public static class SecretNotPlainText implements RootAction {
+
+        public static Secret secret;
+
+        @Override
+        public String getIconFileName() {
+            return null;
+        }
+
+        @Override
+        public String getDisplayName() {
+            return null;
+        }
+
+        @Override
+        public String getUrlName() {
+            return "secretNotPlainText";
+        }
+    }
+
+    @Issue({"SECURITY-266", "SECURITY-304"})
+    @Test
+    public void testExposedCiphertext() throws Exception {
+        ApiTokenTestHelper.enableLegacyBehavior();
+
+        boolean saveEnabled = Item.EXTENDED_READ.getEnabled();
+        Item.EXTENDED_READ.setEnabled(true);
+        try {
+
+            //final String plain_regex_match = ".*\\{[A-Za-z0-9+/]+={0,2}}.*";
+            final String xml_regex_match = "\\{[A-Za-z0-9+/]+={0,2}}";
+            final Pattern xml_regex_pattern = Pattern.compile(xml_regex_match);
+            final String staticTest = "\n\nvalue=\"{AQAAABAAAAAgXhXgopokysZkduhl+v1gm0UhUBBbjKDVpKz7bGk3mIO53cNTRdlu7LC4jZYEc+vF}\"\n";
+            //Just a quick verification on what could be on the page and that the regexp is correctly set up
+            assertThat(xml_regex_pattern.matcher(staticTest).find(), is(true));
+
+            j.jenkins.setSecurityRealm(new JenkinsRule().createDummySecurityRealm());
+            j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy().
+                grant(Jenkins.ADMINISTER).everywhere().to("admin").
+                grant(Jenkins.READ, Item.READ, Item.EXTENDED_READ,
+                    Item.CREATE // so we can show CopyJobCommand would barf; more realistic would be to grant it only in a subfolder
+                ).everywhere().to("dev"));
+            Secret s = Secret.fromString("s3cr3t");
+            //String sEnc = s.getEncryptedValue();
+            FreeStyleProject p = j.createFreeStyleProject("p");
+            p.setDisplayName("Unicode here ←");
+            p.setDescription("This+looks+like+Base64+but+is+not+a+secret");
+            p.addProperty(new VulnerableProperty(s));
+
+            User admin = User.getById("admin", true);
+            User dev = User.getById("dev", true);
+
+            JenkinsRule.WebClient wc = j.createWebClient();
+            // Control case: an administrator can read and write configuration freely.
+            wc.withBasicApiToken(admin);
+            HtmlPage configure = wc.getPage(p, "configure");
+            assertThat(xml_regex_pattern.matcher(configure.getWebResponse().getContentAsString()).find(), is(true));
+            j.submit(configure.getFormByName("config"));
+            VulnerableProperty vp = p.getProperty(VulnerableProperty.class);
+            assertNotNull(vp);
+            assertEquals(s, vp.secret);
+            Page configXml = wc.goTo(p.getUrl() + "config.xml", "application/xml");
+            String xmlAdmin = configXml.getWebResponse().getContentAsString();
+
+            assertThat(Pattern.compile("<secret>" + xml_regex_match + "</secret>").matcher(xmlAdmin).find(), is(true));
+            assertThat(xmlAdmin, containsString("<displayName>" + p.getDisplayName() + "</displayName>"));
+            assertThat(xmlAdmin, containsString("<description>" + p.getDescription() + "</description>"));
+            // CLICommandInvoker does not work here, as it sets up its own SecurityRealm + AuthorizationStrategy.
+            GetJobCommand getJobCommand = new GetJobCommand();
+            Authentication adminAuth = User.get("admin").impersonate2();
+            getJobCommand.setTransportAuth2(adminAuth);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            String pName = p.getFullName();
+            getJobCommand.main(Collections.singletonList(pName), Locale.ENGLISH, System.in, new PrintStream(baos), System.err);
+            assertEquals(xmlAdmin, baos.toString(configXml.getWebResponse().getContentCharset().name()));
+            CopyJobCommand copyJobCommand = new CopyJobCommand();
+            copyJobCommand.setTransportAuth2(adminAuth);
+            String pAdminName = pName + "-admin";
+            assertEquals(0, copyJobCommand.main(Arrays.asList(pName, pAdminName), Locale.ENGLISH, System.in, System.out, System.err));
+            FreeStyleProject pAdmin = j.jenkins.getItemByFullName(pAdminName, FreeStyleProject.class);
+            assertNotNull(pAdmin);
+            pAdmin.setDisplayName(p.getDisplayName()); // counteract DisplayNameListener
+            assertEquals(p.getConfigFile().asString(), pAdmin.getConfigFile().asString());
+
+            // Test case: another user with EXTENDED_READ but not CONFIGURE should not get access even to encrypted secrets.
+            wc.withBasicApiToken(dev);
+            configure = wc.getPage(p, "configure");
+            assertThat(xml_regex_pattern.matcher(configure.getWebResponse().getContentAsString()).find(), is(false));
+            configXml = wc.goTo(p.getUrl() + "config.xml", "application/xml");
+            String xmlDev = configXml.getWebResponse().getContentAsString();
+            assertThat(xml_regex_pattern.matcher(xmlDev).find(), is(false));
+            assertEquals(xmlAdmin.replaceAll(xml_regex_match, "********"), xmlDev);
+            getJobCommand = new GetJobCommand();
+            Authentication devAuth = User.get("dev").impersonate2();
+            getJobCommand.setTransportAuth2(devAuth);
+            baos = new ByteArrayOutputStream();
+            getJobCommand.main(Collections.singletonList(pName), Locale.ENGLISH, System.in, new PrintStream(baos), System.err);
+            assertEquals(xmlDev, baos.toString(configXml.getWebResponse().getContentCharset().name()));
+            copyJobCommand = new CopyJobCommand();
+            copyJobCommand.setTransportAuth2(devAuth);
+            String pDevName = pName + "-dev";
+            assertThat(copyJobCommand.main(Arrays.asList(pName, pDevName), Locale.ENGLISH, System.in, System.out, System.err), not(0));
+            assertNull(j.jenkins.getItemByFullName(pDevName, FreeStyleProject.class));
+
+        } finally {
+            Item.EXTENDED_READ.setEnabled(saveEnabled);
+        }
+    }
+
+    @Test
+    @Issue("SECURITY-616")
+    public void testCheckMethod() throws Exception {
+        FreeStyleProject p = j.createFreeStyleProject("p");
+        p.addProperty(new VulnerableProperty(null));
+        HtmlTextInput field = j.createWebClient().getPage(p, "configure").getFormByName("config").getInputByName("_.secret");
+        while (VulnerableProperty.DescriptorImpl.incomingURL == null) { // waitForBackgroundJavaScript does not work well
+            Thread.sleep(100); // form validation of saved value
+        }
+        VulnerableProperty.DescriptorImpl.incomingURL = null;
+        String secret = "s3cr3t";
+        // the fireEvent is required as setText's new behavior is not triggering the onChange event anymore
+        field.setText(secret);
+        field.fireEvent("change");
+        while (VulnerableProperty.DescriptorImpl.incomingURL == null) {
+            Thread.sleep(100); // form validation of edited value
+        }
+        assertThat(VulnerableProperty.DescriptorImpl.incomingURL, not(containsString(secret)));
+        assertEquals(secret, VulnerableProperty.DescriptorImpl.checkedSecret);
+    }
+
+    public static class VulnerableProperty extends JobProperty<FreeStyleProject> {
+        public final Secret secret;
+        @DataBoundConstructor
+        public VulnerableProperty(Secret secret) {
+            this.secret = secret;
+        }
+        @TestExtension
+        public static class DescriptorImpl extends JobPropertyDescriptor {
+            static String incomingURL;
+            static String checkedSecret;
+            public FormValidation doCheckSecret(@QueryParameter String value) {
+                StaplerRequest req = Stapler.getCurrentRequest();
+                incomingURL = req.getRequestURIWithQueryString();
+                System.err.println("processing " + incomingURL + " via " + req.getMethod() + ": " + value);
+                checkedSecret = value;
+                return FormValidation.ok();
+            }
+        }
+    }
+
+    @Test
+    public void testBackgroundSecretConversion() throws Exception {
+        final JenkinsRule.WebClient wc = j.createWebClient();
+        j.configRoundtrip();
+        // empty default values
+        assertEquals("", PasswordHolderConfiguration.getInstance().secretWithSecretGetterAndSetter.getPlainText());
+        assertEquals("", PasswordHolderConfiguration.getInstance().secretWithStringGetterAndSetter.getPlainText());
+        assertEquals("", PasswordHolderConfiguration.getInstance().stringWithSecretGetterAndSetter);
+        assertEquals("", PasswordHolderConfiguration.getInstance().stringWithStringGetterAndSetter);
+
+        // set some values and expect them to remain after round-trip
+        final Secret secretWithSecretGetterAndSetter = Secret.fromString("secretWithSecretGetterAndSetter");
+        secretWithSecretGetterAndSetter.getEncryptedValue(); // ensure IV is set so the encrypted value is stable
+        PasswordHolderConfiguration.getInstance().secretWithSecretGetterAndSetter = secretWithSecretGetterAndSetter;
+
+        final Secret secretWithStringGetterAndSetter = Secret.fromString("secretWithStringGetterAndSetter");
+        secretWithStringGetterAndSetter.getEncryptedValue(); // ensure IV is set so the encrypted value is stable
+        PasswordHolderConfiguration.getInstance().secretWithStringGetterAndSetter = secretWithStringGetterAndSetter;
+
+        PasswordHolderConfiguration.getInstance().stringWithSecretGetterAndSetter = "stringWithSecretGetterAndSetter";
+        PasswordHolderConfiguration.getInstance().stringWithStringGetterAndSetter = "stringWithStringGetterAndSetter";
+
+
+        final HtmlPage configPage = wc.goTo("configure");
+        for (DomElement element : configPage.getElementsByTagName("input")) {
+            if ("hidden".equals(element.getAttribute("type")) && element.getAttribute("class").contains("complex-password-field")) {
+                final HtmlHiddenInput input = (HtmlHiddenInput) element;
+                // assert that all password fields contain encrypted values after we set plain values
+                assertTrue(input.getValueAttribute().startsWith("{"));
+                assertTrue(input.getValueAttribute().endsWith("}"));
+            }
+        }
+
+        j.configRoundtrip();
+
+        // confirm round-trip did not change effective values
+        assertEquals("secretWithSecretGetterAndSetter", PasswordHolderConfiguration.getInstance().secretWithSecretGetterAndSetter.getPlainText());
+        assertEquals("secretWithStringGetterAndSetter", PasswordHolderConfiguration.getInstance().secretWithStringGetterAndSetter.getPlainText());
+        assertEquals("stringWithSecretGetterAndSetter", PasswordHolderConfiguration.getInstance().stringWithSecretGetterAndSetter);
+        assertEquals("stringWithStringGetterAndSetter", PasswordHolderConfiguration.getInstance().stringWithStringGetterAndSetter);
+
+        assertEquals(secretWithSecretGetterAndSetter.getEncryptedValue(), PasswordHolderConfiguration.getInstance().secretWithSecretGetterAndSetter.getEncryptedValue());
+
+        // The following is because the serialized "Secret" value in the form gets decrypted, losing IV, to be passed as String into the setter, to be converted to Secret, getting new IV in #getEncryptedValue call.
+        assertNotEquals(secretWithStringGetterAndSetter.getEncryptedValue(), PasswordHolderConfiguration.getInstance().secretWithStringGetterAndSetter.getEncryptedValue());
+    }
+
+    @TestExtension
+    public static class PasswordHolderConfiguration extends GlobalConfiguration {
+        private Secret secretWithStringGetterAndSetter; // the badly implemented secret migration
+        private Secret secretWithSecretGetterAndSetter; // the old, good case
+        private String stringWithStringGetterAndSetter; // the trivially wrong case
+        private String stringWithSecretGetterAndSetter;
+
+        public String getSecretWithStringGetterAndSetter() {
+            return secretWithStringGetterAndSetter == null ? null : secretWithStringGetterAndSetter.getPlainText();
+        }
+
+        public void setSecretWithStringGetterAndSetter(String secretWithStringGetterAndSetter) {
+            this.secretWithStringGetterAndSetter = Secret.fromString(secretWithStringGetterAndSetter);
+        }
+
+        public Secret getSecretWithSecretGetterAndSetter() {
+            return secretWithSecretGetterAndSetter;
+        }
+
+        public void setSecretWithSecretGetterAndSetter(Secret secretWithSecretGetterAndSetter) {
+            this.secretWithSecretGetterAndSetter = secretWithSecretGetterAndSetter;
+        }
+
+        public String getStringWithStringGetterAndSetter() {
+            return stringWithStringGetterAndSetter;
+        }
+
+        public void setStringWithStringGetterAndSetter(String stringWithStringGetterAndSetter) {
+            this.stringWithStringGetterAndSetter = stringWithStringGetterAndSetter;
+        }
+
+        public Secret getStringWithSecretGetterAndSetter() {
+            return Secret.fromString(stringWithSecretGetterAndSetter);
+        }
+
+        public void setStringWithSecretGetterAndSetter(Secret stringWithSecretGetterAndSetter) {
+            this.stringWithSecretGetterAndSetter = stringWithSecretGetterAndSetter == null? null : stringWithSecretGetterAndSetter.getPlainText();
+        }
+
+        public static PasswordHolderConfiguration getInstance() {
+            return GlobalConfiguration.all().getInstance(PasswordHolderConfiguration.class);
+        }
+    }
+
+    @Test
+    public void testBuildStep() throws Exception {
+        final FreeStyleProject project = j.createFreeStyleProject();
+        project.getBuildersList().add(new PasswordHolderBuildStep());
+        project.save();
+        assertEquals(1, project.getBuilders().size());
+        j.configRoundtrip(project);
+
+        // empty default values after initial form submission
+        PasswordHolderBuildStep buildStep = (PasswordHolderBuildStep) project.getBuildersList().get(0);
+        assertNotNull(buildStep);
+        assertEquals("", buildStep.secretWithSecretGetterSecretSetter.getPlainText());
+        assertEquals("", buildStep.secretWithSecretGetterStringSetter.getPlainText());
+        assertEquals("", buildStep.secretWithStringGetterSecretSetter.getPlainText());
+        assertEquals("", buildStep.secretWithStringGetterStringSetter.getPlainText());
+        assertEquals("", buildStep.stringWithSecretGetterSecretSetter);
+        assertEquals("", buildStep.stringWithSecretGetterStringSetter);
+        assertEquals("", buildStep.stringWithStringGetterSecretSetter);
+        assertEquals("", buildStep.stringWithStringGetterStringSetter);
+
+        buildStep = (PasswordHolderBuildStep) project.getBuildersList().get(0);
+        assertNotNull(buildStep);
+
+
+        // set some values and expect them to remain after round-trip
+        final Secret secretWithSecretGetterSecretSetter = Secret.fromString("secretWithSecretGetterSecretSetter");
+        secretWithSecretGetterSecretSetter.getEncryptedValue(); // ensure IV is set so the encrypted value is stable
+        buildStep.secretWithSecretGetterSecretSetter = secretWithSecretGetterSecretSetter;
+
+        final Secret secretWithStringGetterStringSetter = Secret.fromString("secretWithStringGetterStringSetter");
+        secretWithStringGetterStringSetter.getEncryptedValue(); // ensure IV is set so the encrypted value is stable
+        buildStep.secretWithStringGetterStringSetter = secretWithStringGetterStringSetter;
+
+        final Secret secretWithStringGetterSecretSetter = Secret.fromString("secretWithStringGetterSecretSetter");
+        secretWithStringGetterSecretSetter.getEncryptedValue(); // ensure IV is set so the encrypted value is stable
+        buildStep.secretWithStringGetterSecretSetter = secretWithStringGetterSecretSetter;
+
+        final Secret secretWithSecretGetterStringSetter = Secret.fromString("secretWithSecretGetterStringSetter");
+        secretWithSecretGetterStringSetter.getEncryptedValue(); // ensure IV is set so the encrypted value is stable
+        buildStep.secretWithSecretGetterStringSetter = secretWithSecretGetterStringSetter;
+
+        buildStep.stringWithSecretGetterSecretSetter = "stringWithSecretGetterSecretSetter";
+        buildStep.stringWithStringGetterStringSetter = "stringWithStringGetterStringSetter";
+        buildStep.stringWithStringGetterSecretSetter = "stringWithStringGetterSecretSetter";
+        buildStep.stringWithSecretGetterStringSetter = "stringWithSecretGetterStringSetter";
+
+        project.save();
+
+        final HtmlPage configPage = j.createWebClient().goTo(project.getUrl() + "/configure");
+        int i = 0;
+        for (DomElement element : configPage.getElementsByTagName("input")) {
+            if ("hidden".equals(element.getAttribute("type")) && element.getAttribute("class").contains("complex-password-field")) {
+                final HtmlHiddenInput input = (HtmlHiddenInput) element;
+                // assert that all password fields contain encrypted values after we set plain values
+                assertTrue(input.getValueAttribute().startsWith("{"));
+                assertTrue(input.getValueAttribute().endsWith("}"));
+                i++;
+            }
+        }
+        assertTrue(i >= 8); // at least 8 password fields expected on that job config form
+
+        j.configRoundtrip(project);
+        buildStep = (PasswordHolderBuildStep) project.getBuildersList().get(0);
+
+        // confirm round-trip did not change effective values
+        assertEquals("secretWithSecretGetterSecretSetter", buildStep.secretWithSecretGetterSecretSetter.getPlainText());
+        assertEquals("secretWithStringGetterStringSetter", buildStep.secretWithStringGetterStringSetter.getPlainText());
+        assertEquals("secretWithStringGetterSecretSetter", buildStep.secretWithStringGetterSecretSetter.getPlainText());
+        assertEquals("secretWithSecretGetterStringSetter", buildStep.secretWithSecretGetterStringSetter.getPlainText());
+
+        assertEquals("stringWithSecretGetterSecretSetter", buildStep.stringWithSecretGetterSecretSetter);
+        assertEquals("stringWithStringGetterStringSetter", buildStep.stringWithStringGetterStringSetter);
+        assertEquals("stringWithStringGetterSecretSetter", buildStep.stringWithStringGetterSecretSetter);
+        assertEquals("stringWithSecretGetterStringSetter", buildStep.stringWithSecretGetterStringSetter);
+
+        // confirm the Secret getter/setter will not change encrypted value (keeps IV)
+        assertEquals(secretWithSecretGetterSecretSetter.getEncryptedValue(), buildStep.secretWithSecretGetterSecretSetter.getEncryptedValue());
+
+        // This depends on implementation; if the Getter returns the plain text (to be re-encrypted by Functions#getPasswordValue), then this won't work, but if they getter returns #getEncrytedValue (as implemented in the build step here), it does
+        // While clever, would recommend fixing mismatched getters/setters here
+        assertEquals(secretWithStringGetterSecretSetter.getEncryptedValue(), buildStep.secretWithStringGetterSecretSetter.getEncryptedValue());
+
+        // This isn't equal because we expect that the code cannot handle an encrypted secret value passed to the setter, so we decrypt it
+        assertNotEquals(secretWithStringGetterStringSetter.getEncryptedValue(), buildStep.secretWithStringGetterStringSetter.getEncryptedValue());
+    }
+
+    public static class PasswordHolderBuildStep extends Builder implements SimpleBuildStep {
+
+        // There are actually more cases than this, but between this and testStringlyTypedSecrets we should be covering everything sufficiently:
+        // Storage permutations:
+        // - Secret
+        // - plain string
+        // - encrypted string
+        // Getter permutations:
+        // - Secret
+        // - plain string
+        // - encrypted string
+        // Setter permutations:
+        // - Secret
+        // - String that can handle encrypted values
+        // - String that cannot handle encrypted values
+        //
+        // These last two aren't really all that different, since we decrypt encrypted Strings now.
+        private Secret secretWithStringGetterStringSetter; // the badly implemented secret migration
+        private Secret secretWithSecretGetterStringSetter;
+        private Secret secretWithStringGetterSecretSetter;
+        private Secret secretWithSecretGetterSecretSetter; // the old, good case
+        private String stringWithStringGetterStringSetter; // the trivially wrong case
+        private String stringWithSecretGetterStringSetter;
+        private String stringWithStringGetterSecretSetter;
+        private String stringWithSecretGetterSecretSetter;
+
+        @DataBoundConstructor
+        public PasswordHolderBuildStep() {
+            // data binding
+        }
+
+        public String getSecretWithStringGetterStringSetter() {
+            return secretWithStringGetterStringSetter == null ? null : secretWithStringGetterStringSetter.getEncryptedValue(); // model half-assed migration from String to Secret
+        }
+
+        @DataBoundSetter
+        public void setSecretWithStringGetterStringSetter(String secretWithStringGetterStringSetter) {
+            this.secretWithStringGetterStringSetter = Secret.fromString(secretWithStringGetterStringSetter);
+        }
+
+        public Secret getSecretWithSecretGetterStringSetter() {
+            return secretWithSecretGetterStringSetter;
+        }
+
+        @DataBoundSetter
+        public void setSecretWithSecretGetterStringSetter(String secretWithSecretGetterStringSetter) {
+            this.secretWithSecretGetterStringSetter = Secret.fromString(secretWithSecretGetterStringSetter);
+        }
+
+        public String getSecretWithStringGetterSecretSetter() {
+            return secretWithStringGetterSecretSetter == null ? null : secretWithStringGetterSecretSetter.getEncryptedValue(); // model half-assed migration from String to Secret
+        }
+
+        @DataBoundSetter
+        public void setSecretWithStringGetterSecretSetter(Secret secretWithStringGetterSecretSetter) {
+            this.secretWithStringGetterSecretSetter = secretWithStringGetterSecretSetter;
+        }
+
+        public Secret getSecretWithSecretGetterSecretSetter() {
+            return secretWithSecretGetterSecretSetter;
+        }
+
+        @DataBoundSetter
+        public void setSecretWithSecretGetterSecretSetter(Secret secretWithSecretGetterSecretSetter) {
+            this.secretWithSecretGetterSecretSetter = secretWithSecretGetterSecretSetter;
+        }
+
+        public String getStringWithStringGetterStringSetter() {
+            return stringWithStringGetterStringSetter;
+        }
+
+        @DataBoundSetter
+        public void setStringWithStringGetterStringSetter(String stringWithStringGetterStringSetter) {
+            this.stringWithStringGetterStringSetter = stringWithStringGetterStringSetter;
+        }
+
+        public Secret getStringWithSecretGetterStringSetter() {
+            return Secret.fromString(stringWithSecretGetterStringSetter);
+        }
+
+        @DataBoundSetter
+        public void setStringWithSecretGetterStringSetter(String stringWithSecretGetterStringSetter) {
+            this.stringWithSecretGetterStringSetter = stringWithSecretGetterStringSetter;
+        }
+
+        public String getStringWithStringGetterSecretSetter() {
+            return stringWithStringGetterSecretSetter;
+        }
+
+        @DataBoundSetter
+        public void setStringWithStringGetterSecretSetter(Secret stringWithStringGetterSecretSetter) {
+            this.stringWithStringGetterSecretSetter = stringWithStringGetterSecretSetter == null? null : stringWithStringGetterSecretSetter.getPlainText();
+        }
+
+        public Secret getStringWithSecretGetterSecretSetter() {
+            return Secret.fromString(stringWithSecretGetterSecretSetter);
+        }
+
+        @DataBoundSetter
+        public void setStringWithSecretGetterSecretSetter(Secret stringWithSecretGetterSecretSetter) {
+            this.stringWithSecretGetterSecretSetter = stringWithSecretGetterSecretSetter == null? null : stringWithSecretGetterSecretSetter.getPlainText();
+        }
+
+        @Override
+        public void perform(@NonNull Run<?, ?> run, @NonNull FilePath workspace, @NonNull Launcher launcher, @NonNull TaskListener listener) throws InterruptedException, IOException {
+            // do nothing
+        }
+
+        @TestExtension
+        public static class DescriptorImpl extends BuildStepDescriptor<Builder> {
+
+            @Override
+            public boolean isApplicable(Class<? extends AbstractProject> jobType) {
+                return jobType == FreeStyleProject.class;
+            }
+        }
+    }
+
+    @Test
+    public void testStringlyTypedSecrets() throws Exception {
+        final FreeStyleProject project = j.createFreeStyleProject();
+        project.getBuildersList().add(new StringlyTypedSecretsBuilder(""));
+        project.save();
+        assertEquals(1, project.getBuilders().size());
+        j.configRoundtrip(project);
+
+        // empty default values after initial form submission
+        StringlyTypedSecretsBuilder buildStep = (StringlyTypedSecretsBuilder) project.getBuildersList().get(0);
+        assertNotNull(buildStep);
+        assertTrue(buildStep.mySecret.startsWith("{"));
+        assertTrue(buildStep.mySecret.endsWith("}"));
+        assertTrue(Secret.fromString(buildStep.mySecret).getPlainText().isEmpty());
+
+        // set a value and expect it to remain after round-trip
+        final Secret stringlyTypedSecret = Secret.fromString("stringlyTypedSecret");
+        stringlyTypedSecret.getEncryptedValue(); // ensure IV is set so the encrypted value is stable
+        buildStep.mySecret = stringlyTypedSecret.getEncryptedValue();
+
+        project.save();
+
+        final HtmlPage configPage = j.createWebClient().goTo(project.getUrl() + "/configure");
+        for (DomElement element : configPage.getElementsByTagName("input")) {
+            if ("hidden".equals(element.getAttribute("type")) && element.getAttribute("class").contains("complex-password-field")) {
+                final HtmlHiddenInput input = (HtmlHiddenInput) element;
+                // assert that all password fields contain encrypted values after we set plain values
+                assertTrue(input.getValueAttribute().startsWith("{"));
+                assertTrue(input.getValueAttribute().endsWith("}"));
+            }
+        }
+
+        j.configRoundtrip(project);
+        buildStep = (StringlyTypedSecretsBuilder) project.getBuildersList().get(0);
+
+        // confirm round-trip did not change effective values
+        assertEquals("stringlyTypedSecret", Secret.fromString(buildStep.mySecret).getPlainText());
+
+        // Unfortunately the constructor parameter will be decrypted transparently now, so this is sort of a minor regression with this enhancement.
+        // Note that it's not enough to just undo the related changes to core/src/main to try this; as Functions#getPasswordValue will throw a SecurityException during tests only and break the previous assertion.
+        assertNotEquals(stringlyTypedSecret.getEncryptedValue(), buildStep.mySecret);
+    }
+
+    public static class StringlyTypedSecretsBuilder extends Builder implements SimpleBuildStep {
+
+        private String mySecret;
+
+        @DataBoundConstructor
+        public StringlyTypedSecretsBuilder(String mySecret) {
+            this.mySecret = Secret.fromString(mySecret).getEncryptedValue();
+        }
+
+        public String getMySecret() {
+            return mySecret;
+        }
+
+        @Override
+        public void perform(@NonNull Run<?, ?> run, @NonNull FilePath workspace, @NonNull Launcher launcher, @NonNull TaskListener listener) throws InterruptedException, IOException {
+            // do nothing
+        }
+
+        @TestExtension
+        public static class DescriptorImpl extends BuildStepDescriptor<Builder> {
+
+            @Override
+            public boolean isApplicable(Class<? extends AbstractProject> jobType) {
+                return jobType == FreeStyleProject.class;
+            }
+        }
+    }
+
+    @Test
+    public void testBlankoutOfStringBackedPasswordFieldWithoutItemConfigure() throws Exception {
+        FreeStyleProject p = j.createFreeStyleProject();
+        JenkinsRule.WebClient wc = j.createWebClient();
+        HtmlPage htmlPage = wc.goTo(p.getUrl() + "/passwordFields");
+        for (DomElement element : htmlPage.getElementsByTagName("input")) {
+            if ("hidden".equals(element.getAttribute("type")) && element.getAttribute("class").contains("complex-password-field")) {
+                final HtmlHiddenInput input = (HtmlHiddenInput) element;
+                // assert that all password fields contain encrypted values after we set plain values
+                assertTrue(input.getValueAttribute().startsWith("{"));
+                assertTrue(input.getValueAttribute().endsWith("}"));
+            }
+        }
+
+        final MockAuthorizationStrategy a = new MockAuthorizationStrategy();
+        a.grant(Jenkins.READ, Item.READ, Item.EXTENDED_READ).everywhere().toEveryone();
+        j.jenkins.setAuthorizationStrategy(a);
+
+        /* Now go to the page without Item/Configure and expect asterisks */
+        htmlPage = wc.goTo(p.getUrl() + "/passwordFields");
+        for (DomElement element : htmlPage.getElementsByTagName("input")) {
+            if ("hidden".equals(element.getAttribute("type")) && element.getAttribute("class").contains("complex-password-field")) {
+                final HtmlHiddenInput input = (HtmlHiddenInput) element;
+                assertEquals("********", input.getValueAttribute());
+            }
+        }
+    }
+
+    @TestExtension
+    public static class FactoryImpl extends TransientActionFactory<Job> {
+
+        @Override
+        public Class<Job> type() {
+            return Job.class;
+        }
+
+        @NonNull
+        @Override
+        public Collection<? extends Action> createFor(@NonNull Job target) {
+            return Collections.singletonList(new ActionImpl());
+        }
+    }
+
+    public static class ActionImpl implements Action {
+
+        @CheckForNull
+        @Override
+        public String getIconFileName() {
+            return null;
+        }
+
+        @CheckForNull
+        @Override
+        public String getDisplayName() {
+            return null;
+        }
+
+        @CheckForNull
+        @Override
+        public String getUrlName() {
+            return "passwordFields";
+        }
+
+        public Secret getSecretPassword() {
+            return Secret.fromString("secretPassword");
+        }
+
+        public String getStringPassword() {
+            return "stringPassword";
+        }
+    }
+
+    @Test
+    public void computerExtendedReadNoSecretsRevealed() throws Exception {
+        Computer computer = j.jenkins.getComputers()[0];
+        computer.addAction(new SecuredAction());
+
+        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+
+        final String ADMIN = "admin";
+        final String READONLY = "readonly";
+        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
+                // full access
+                .grant(Jenkins.ADMINISTER).everywhere().to(ADMIN)
+
+                // Extended access
+                .grant(Computer.EXTENDED_READ).everywhere().to(READONLY)
+                .grant(Jenkins.READ).everywhere().to(READONLY)
+
+        );
+
+        JenkinsRule.WebClient wc = j.createWebClient();
+
+        {
+            wc.login(READONLY);
+            HtmlPage page = wc.goTo("computer/(built-in)/secured/");
+
+            String value = ((HtmlInput)page.getElementById("password")).getValueAttribute();
+            assertThat(value, is("********"));
+        }
+
+        {
+            wc.login(ADMIN);
+            HtmlPage page = wc.goTo("computer/(built-in)/secured/");
+
+            String value = ((HtmlInput)page.getElementById("password")).getValueAttribute();
+            assertThat(Secret.fromString(value).getPlainText(), is("abcdefgh"));
+        }
+    }
+
+
+    public static class SecuredAction implements Action {
+
+        public final Secret secret = Secret.fromString("abcdefgh");
+
+        @Override
+        public String getIconFileName() {
+            return null;
+        }
+
+        @Override
+        public String getDisplayName() {
+            return "Secured";
+        }
+
+        @Override
+        public String getUrlName() {
+            return "secured";
+        }
+    }
+}

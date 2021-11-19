@@ -1,0 +1,85 @@
+<!--
+The MIT License
+
+Copyright (c) 2004-2010, Sun Microsystems, Inc., Kohsuke Kawaguchi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+-->
+
+<!--
+  Render a single build history entry indicated by ${build} (hudson.model.Build)
+-->
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:i="jelly:fmt">
+  <j:set var="build" value="${pageEntry.entry}" />
+  <j:set var="firstTransientBuildKey" value="${it.widget.firstTransientBuildKey}" />
+  <j:set var="transitive" value="${(firstTransientBuildKey!=null and (it.widget.adapter.compare(build,firstTransientBuildKey) ge 0)) ? 'transitive' : null}" />
+  <j:set var="link" value="${it.widget.baseUrl}/${build.number}/" />
+  <j:if test="${h.isUserTimeZoneOverride()}">
+    <i:setTimeZone value="${h.getUserTimeZone()}" />
+   </j:if>
+  <tr class="build-row ${transitive} single-line" page-entry-id="${pageEntry.entryId}">
+    <td class="build-row-cell">
+      <div class="pane build-name">
+        <div class="build-icon">
+          <a class="build-status-link" href="${link}console"><l:icon alt="${build.iconColor.description} &gt; ${%Console Output}" class="${build.buildStatusIconClassName} icon-sm" tooltip="${build.iconColor.description} &gt; ${%Console Output}"/></a>
+        </div>
+        <a class="tip model-link inside build-link display-name" update-parent-class=".build-row" href="${link}">${build.displayName}</a>
+      </div>
+      <div class="pane build-details" time="${build.timestamp.time.time}">
+        <j:set var="linkTitleAttr" value=""/> 
+        <j:if test="${!build.building}">
+          <j:set var="linkTitleAttr">${%Took} ${build.durationString}</j:set>
+        </j:if>
+        <a class="tip model-link inside build-link" href="${link}" update-parent-class=".build-row" tooltip="${linkTitleAttr}">
+          <i:formatDate value="${build.timestamp.time}" type="both" dateStyle="medium" timeStyle="short" /> ${h.getUserTimeZonePostfix()}
+        </a>
+        <j:if test="${build.building}">
+	  <j:set target="${it.widget}" property="nextBuildNumberToFetch" value="${build.number}"/>
+          <t:buildProgressBar build="${build}"/>
+        </j:if>
+      </div>
+      <div class="pane build-controls">
+        <div class="middle-align build-badge">
+          <j:set var="badges" value="${build.badgeActions}"/>
+          <j:if test="${!empty(badges)}">
+            <st:nbsp/>
+            <j:forEach var="badge" items="${badges}">
+              <st:include it="${badge}" page="badge.jelly" />
+            </j:forEach>
+          </j:if>
+        </div>
+        <j:if test="${build.building}">
+          <div class="build-stop">
+            <!-- Check CANCEL permission for Project, Admin permission otherwise -->
+            <j:if test="${empty(it.widget.owner.CANCEL) ? h.hasPermission(app.ADMINISTER) : it.widget.owner.hasPermission(it.widget.owner.CANCEL)}">
+              <l:stopButton href="${link}stop" alt="[cancel]" confirm="${%confirm(build.fullDisplayName)}" />
+            </j:if>
+          </div>
+        </j:if>
+      </div>
+      <j:if test="${!empty build.truncatedDescription}">
+        <div class="pane desc indent-multiline">
+          <j:out value="${app.markupFormatter.translate(build.truncatedDescription)}"/>
+        </div>
+      </j:if>
+      <div class="left-bar" />
+    </td>
+  </tr>
+</j:jelly>

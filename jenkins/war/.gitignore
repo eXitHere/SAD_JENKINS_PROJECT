@@ -1,0 +1,14 @@
+work
+/rebel.xml
+junit.xml
+
+# Node
+node/
+node_modules/
+
+# Generated JavaScript Bundles
+jsbundles
+
+src/main/webapp/css/font-awesome
+src/main/webapp/css/google-fonts
+src/main/webapp/css/icomoon

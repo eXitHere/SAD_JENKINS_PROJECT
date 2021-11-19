@@ -1,0 +1,77 @@
+<!--
+The MIT License
+
+Copyright (c) 2011, CloudBees, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+-->
+
+<!-- 3rd party license acknowledgements and  -->
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:s="/lib/form">
+
+  <l:layout permissions="${app.MANAGE_AND_SYSTEM_READ}" type="one-column" title="${%about(app.VERSION)}">
+    <l:main-panel>
+    <div class="container-fluid">
+      <div class="row">
+        <div class="col-md-24">
+          <h1 version="${app.VERSION}">${%about(app.VERSION)}</h1>
+          <p>${%blurb}</p>
+          <h2>${%dependencies}</h2>
+          <h3>${%maven.dependencies}</h3>
+          <j:set var="uri" value="${it.licensesURL}"/>
+          <j:choose>
+            <j:when test="${uri != null}">
+              <t:thirdPartyLicenses>
+                <j:include uri="${uri}"/>
+              </t:thirdPartyLicenses>
+            </j:when>
+            <j:otherwise>
+              <p>${%No information recorded}</p>
+            </j:otherwise>
+          </j:choose>
+          <h3>${%static.dependencies}</h3>
+          <ul>
+            <li><a href="http://fontawesome.io">Font Awesome</a>, created by <a href="https://twitter.com/davegandy">Dave Gandy</a>. <a href="http://scripts.sil.org/OFL">SIL OFL 1.1 License</a> and <a href="https://opensource.org/licenses/MIT">MIT License</a></li>
+            <li><a href="https://www.google.com/fonts/specimen/Roboto">Google Fonts: Roboto</a>, created by <a href="https://plus.google.com/110879635926653430880/about">Christian Robertson</a>. <a href="https://www.apache.org/licenses/LICENSE-2.0.html">Apache License, version 2.0</a></li>
+            <li><a href="https://github.com/jenkins-contrib-themes/jenkins-core-theme">Jenkins Contrib Themes</a>, created by <a href="https://github.com/afonsof">Afonso Franca</a>. <a href="https://opensource.org/licenses/MIT">MIT License</a></li>
+          </ul>
+          <h2>${%plugin.dependencies}</h2>
+          <ul>
+            <j:forEach var="p" items="${app.pluginManager.plugins}"> <!-- TODO sort -->
+            <li>
+              <a href="${rootURL}/plugin/${p.shortName}/wrapper/thirdPartyLicenses">
+                <j:choose>
+                  <j:when test="${p.active}">
+                    ${p.displayName}
+                  </j:when>
+                  <j:otherwise>
+                    <strike>${p.displayName}</strike>
+                  </j:otherwise>
+                </j:choose>
+              </a>
+            </li>
+            </j:forEach>
+          </ul>
+        </div>
+      </div>
+    </div>
+    </l:main-panel>
+  </l:layout>
+</j:jelly>
